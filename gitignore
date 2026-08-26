@@ -1,0 +1,22 @@
+# Theos build artifacts
+.theos/
+obj/
+packages/
+*.deb
+*.ipa
+
+# Xcode
+*.xcworkspace
+*.xcuserdata
+DerivedData/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Temporary
+*.zip
+FilzaJailedDS-main/

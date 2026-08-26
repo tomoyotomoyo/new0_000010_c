@@ -1,0 +1,158 @@
+name: Build KFKernel.dylib
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+    branches: [main, master]
+    paths:
+      - 'KFKernel/**'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew install ldid dpkg
+
+      - name: Setup Theos
+        run: |
+          export THEOS=~/theos
+          echo "THEOS=$THEOS" >> $GITHUB_ENV
+          git clone --recursive https://github.com/theos/theos.git $THEOS
+          cd $THEOS
+          git submodule update --init --recursive
+
+      - name: Download iOS SDK
+        run: |
+          export THEOS=~/theos
+          mkdir -p $THEOS/sdks
+          
+          # Download iOS 16.5 SDK (contains IOKit)
+          curl -L -o /tmp/iOS16.5.sdk.zip \
+            "https://github.com/theos/sdks/archive/refs/heads/master.zip" \
+            || true
+          
+          if [ -f /tmp/iOS16.5.sdk.zip ]; then
+            unzip -q /tmp/iOS16.5.sdk.zip -d /tmp/
+            # Find iPhoneOS SDKs
+            for sdk in /tmp/sdks-master/*.sdk; do
+              if [ -d "$sdk" ]; then
+                sdk_name=$(basename "$sdk")
+                if [[ "$sdk_name" == iPhoneOS* ]]; then
+                  echo "Found SDK: $sdk_name"
+                  cp -R "$sdk" "$THEOS/sdks/"
+                fi
+              fi
+            done
+          fi
+          
+          # Verify SDK with IOKit
+          SDK_PATH=$(find $THEOS/sdks -name "iPhoneOS*.sdk" -type d | head -1)
+          if [ -z "$SDK_PATH" ]; then
+            echo "ERROR: No iPhoneOS SDK found!"
+            exit 1
+          fi
+          
+          echo "Using SDK: $SDK_PATH"
+          
+          # Verify IOKit.framework exists
+          if [ ! -d "$SDK_PATH/System/Library/Frameworks/IOKit.framework" ]; then
+            echo "WARNING: IOKit.framework not found in SDK, attempting to locate..."
+            find $SDK_PATH -name "IOKit" -type d 2>/dev/null || true
+          fi
+          
+          ls -la $THEOS/sdks/
+
+      - name: Build KFKernel.dylib
+        run: |
+          export THEOS=~/theos
+          
+          echo "=== Building KFKernel.dylib ==="
+          make clean
+          make FINALPACKAGE=1
+          
+          echo "=== Build complete ==="
+          ls -la .theos/
+          ls -la .theos/obj/
+        run: |
+          export THEOS=~/theos
+          cd KFKernel
+          
+          echo "=== Building KFKernel.dylib ==="
+          make clean
+          make FINALPACKAGE=1
+          
+          echo "=== Build complete ==="
+          ls -la .theos/
+          ls -la .theos/obj/
+
+      - name: Verify output
+        run: |
+          cd .theos/obj
+          
+          echo "=== Architecture info ==="
+          lipo -info *.dylib || true
+          
+          echo "=== Exported symbols (KF*) ==="
+          nm -gU *.dylib | grep "T _KF" | head -40 || true
+          
+          echo "=== File info ==="
+          file *.dylib || true
+          
+          echo "=== Size ==="
+          du -h *.dylib || true
+        run: |
+          cd KFKernel/.theos/obj
+          
+          echo "=== Architecture info ==="
+          lipo -info *.dylib || true
+          
+          echo "=== Exported symbols (KF*) ==="
+          nm -gU *.dylib | grep "T _KF" | head -40 || true
+          
+          echo "=== File info ==="
+          file *.dylib || true
+          
+          echo "=== Size ==="
+          du -h *.dylib || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KFKernel.dylib
+          path: .theos/obj/*.dylib
+          if-no-files-found: error
+
+      - name: Upload complete package
+        uses: actions/upload-artifact@v4
+        with:
+          name: KFKernel-complete
+          path: |
+            .theos/obj/
+            KFKernel.h
+          if-no-files-found: warn
+        uses: actions/upload-artifact@v4
+        with:
+          name: KFKernel.dylib
+          path: KFKernel/.theos/obj/*.dylib
+          if-no-files-found: error
+
+      - name: Upload complete package
+        uses: actions/upload-artifact@v4
+        with:
+          name: KFKernel-complete
+          path: |
+            KFKernel/.theos/obj/
+            KFKernel/KFKernel.h
+          if-no-files-found: warn
