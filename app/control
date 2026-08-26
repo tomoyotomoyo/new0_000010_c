@@ -1,0 +1,8 @@
+Package: com.kflog.kernel
+Name: KFLog
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Kernel log viewer with exploit chain
+Maintainer: KFLog Team
+Author: KFLog Team
+Section: System
